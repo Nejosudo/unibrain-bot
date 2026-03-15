@@ -44,8 +44,17 @@ HORARIO_CONTEXTO = {
     "u2_horario": "Lunes a Jueves, 6:00 PM - 9:00 PM (Niveles de Inglés)"
 }
 
+ADMIN_ID = os.getenv("ADMIN_ID")
+
+async def es_autorizado(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("🚫 Acceso denegado. Este bot es privado.")
+        return False
+    return True
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
+    if not await es_autorizado(message): return
     # Guardar tu perfil la primera vez
     user_id = message.from_user.id
     supabase.table("user_profile").upsert({
@@ -58,7 +67,8 @@ async def cmd_start(message: types.Message):
 
 @dp.message(Command("resumen"))
 async def cmd_resumen(message: types.Message):
-    print("¡Comando /resumen detectado!")
+    #print("¡Comando /resumen detectado!")
+    if not await es_autorizado(message): return
     user_id = message.from_user.id
     await message.answer("🔄 Consultando a mi cerebro de IA... un momento.")
 
@@ -136,9 +146,46 @@ async def cmd_resumen(message: types.Message):
         #print(f"Error en resumen: {e}")
         await message.answer("Uf, me dio un pequeño calambre cerebral. Inténtalo de nuevo.")
 
+@dp.message(Command("buscar"))
+async def cmd_buscar(message: types.Message):
+    if not await es_autorizado(message): return
+    
+    # Extraer la palabra clave después del comando /buscar
+    query = message.text.replace("/buscar", "").strip()
+    
+    if not query:
+        await message.answer("🧐 ¿Qué quieres buscar? Ejemplo: `/buscar examen`")
+        return
+
+    await message.answer(f"🔍 Buscando '{query}' en tu cerebro digital...")
+
+    try:
+        # Buscamos en la columna 'content' usando ilike (ignora mayúsculas/minúsculas)
+        res = supabase.table("activities")\
+            .select("*")\
+            .eq("user_id", message.from_user.id)\
+            .ilike("content", f"%{query}%")\
+            .order("created_at", desc=True)\
+            .limit(5).execute()
+
+        if not res.data:
+            await message.answer(f"No encontré nada relacionado con '{query}'. 🤷‍♂️")
+            return
+
+        respuesta = f"📍 **Resultados para '{query}':**\n\n"
+        for i, nota in enumerate(res.data, 1):
+            fecha = nota['created_at'][:10] # Tomamos solo la fecha AAAA-MM-DD
+            respuesta += f"{i}. [{fecha}] {nota['content']}\n"
+
+        await message.answer(respuesta, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"Error en búsqueda: {e}")
+        await message.answer("Error al buscar en la base de datos.")
 
 @dp.message()
 async def handle_all_messages(message: types.Message):
+    if not await es_autorizado(message): return
     # Evitar procesar comandos como texto de tarea
     if message.text.startswith('/'):
         return
