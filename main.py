@@ -47,7 +47,9 @@ HORARIO_CONTEXTO = {
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 async def es_autorizado(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    # Convertimos ambos a string para evitar errores de tipo de dato
+    if str(message.from_user.id) != str(ADMIN_ID):
+        print(f"DEBUG: Bloqueado usuario {message.from_user.id}")
         await message.answer("🚫 Acceso denegado. Este bot es privado.")
         return False
     return True
