@@ -6,6 +6,19 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from supabase import create_client
 import google.generativeai as genai
+from flask import Flask
+import threading
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+threading.Thread(target=run).start()
 
 # Configurar Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
