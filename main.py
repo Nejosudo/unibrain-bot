@@ -32,7 +32,7 @@ bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
 dp = Dispatcher()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# Tu Horario para la "Memoria"
+# Horario para la "Memoria"
 HORARIO_CONTEXTO = {
     "u1_nombre": "UNIPAZ",
     "u1_horario": {
@@ -59,7 +59,7 @@ async def es_autorizado(message: types.Message):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not await es_autorizado(message): return
-    # Guardar tu perfil la primera vez
+    # Guardar perfil la primera vez
     user_id = message.from_user.id
     supabase.table("user_profile").upsert({
         "user_id": user_id,
@@ -114,7 +114,7 @@ async def cmd_resumen(message: types.Message):
             await message.answer("⚠️ No he encontrado tu perfil. Por favor, usa /start primero para configurarlo.")
             return
 
-        # 3. Prompt (Asegúrate de que las llaves d_schedule coincidan con tu tabla)
+        # 3. Prompt
         prompt_sistema = f"""
         Actúa como un asistente académico experto y amigo. Usuario:
         - Mañana: {perfil['d_schedule']['nombre']} ({perfil['d_schedule']['info']})
@@ -334,7 +334,7 @@ async def cmd_buscar(message: types.Message):
 
         respuesta = f"📍 **Resultados para '{query}':**\n\n"
         for i, nota in enumerate(res.data, 1):
-            fecha = nota['created_at'][:10] # Tomamos solo la fecha AAAA-MM-DD
+            fecha = nota['created_at'][:10] 
             respuesta += f"{i}. [{fecha}] {nota['content']}\n"
 
         await message.answer(respuesta, parse_mode="Markdown")
@@ -350,12 +350,12 @@ async def handle_all_messages(message: types.Message):
     if message.text.startswith('/'):
         return
 
-    # Guardar en la tabla 'activities' (Opción B: Texto Crudo)
+    # Guardar en la tabla 'activities'
     try:
         supabase.table("activities").insert({
             "user_id": message.from_user.id,
             "content": message.text,
-            "category": "pending" # Luego Gemini lo clasificará
+            "category": "pending" 
         }).execute()
         await message.reply("📝 Anotado.")
     except Exception as e:
