@@ -18,14 +18,16 @@ def home():
 def run():
     app.run(host='0.0.0.0', port=8080)
 
-threading.Thread(target=run).start()
+threading.Thread(target=run, daemon=True).start()
+
+# Cargar variables de entorno
+load_dotenv()
 
 # Configurar Gemini
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# Cargar llaves
-load_dotenv()
+# Inicializar clientes
 bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
 dp = Dispatcher()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
@@ -67,6 +69,24 @@ async def cmd_start(message: types.Message):
     
     await message.answer(f"¡Hola! Soy tu asistente de UNIPAZ y Praxis. Todo lo que me escribas lo anotaré para tu resumen semanal.")
 
+@dp.message(Command("day"))
+async def cmd_day(message: types.Message):
+    if not await es_autorizado(message): return
+    
+    # Extraer tarea eliminando el comando inicial
+    partes = message.text.split(maxsplit=1)
+    tarea = partes[1].strip() if len(partes) > 1 else ""
+    if not tarea:
+        await message.answer("📝 Escribe la tarea después del comando. Ej: `/day Estudiar Java`.")
+        return
+
+    supabase.table("daily_tasks").insert({
+        "user_id": message.from_user.id,
+        "task_description": tarea
+    }).execute()
+    
+    await message.answer(f"✅ Añadido: {tarea}")
+
 @dp.message(Command("resumen"))
 async def cmd_resumen(message: types.Message):
     #print("¡Comando /resumen detectado!")
@@ -89,6 +109,10 @@ async def cmd_resumen(message: types.Message):
         # 2. Obtener el perfil
         res_perfil = supabase.table("user_profile").select("*").eq("user_id", user_id).single().execute()
         perfil = res_perfil.data
+        
+        if not perfil:
+            await message.answer("⚠️ No he encontrado tu perfil. Por favor, usa /start primero para configurarlo.")
+            return
 
         # 3. Prompt (Asegúrate de que las llaves d_schedule coincidan con tu tabla)
         prompt_sistema = f"""
@@ -148,12 +172,146 @@ async def cmd_resumen(message: types.Message):
         #print(f"Error en resumen: {e}")
         await message.answer("Uf, me dio un pequeño calambre cerebral. Inténtalo de nuevo.")
 
+user_tasks_cache = {}
+
+@dp.message(Command("day_task")) # Telegram no permite guiones en comandos, usa guion bajo
+async def cmd_day_task(message: types.Message):
+    if not await es_autorizado(message): return
+
+    res = supabase.table("daily_tasks")\
+        .select("*")\
+        .eq("user_id", message.from_user.id)\
+        .eq("is_archived", False)\
+        .order("created_at", desc=False).execute()
+
+    if not res.data:
+        await message.answer("No tienes tareas pendientes para hoy. ✨")
+        return
+
+    texto = "📋 **Tus tareas de hoy:**\n"
+    cache = {}
+    
+    for i, t in enumerate(res.data, 1):
+        status = "✅" if t['is_completed'] else "⏳"
+        texto += f"{i}. {status} {t['task_description']}\n"
+        cache[i] = t['id'] # Guardamos la relación Número <-> ID real
+    
+    user_tasks_cache[message.from_user.id] = cache
+    texto += "\n💡 *Para completar una:* escribe `/hecho` seguido del número (ej: `/hecho 1`)."
+    try:
+        await message.answer(texto, parse_mode="Markdown")
+    except:
+        await message.answer(texto)
+
+# Handler para detectar cuando envías solo un número
+@dp.message(lambda message: message.text.isdigit())
+async def marcar_tarea(message: types.Message):
+    if not await es_autorizado(message): return
+    
+    uid = message.from_user.id
+    num = int(message.text)
+
+    # Verificamos si el usuario tiene una lista activa en el caché
+    if uid in user_tasks_cache and num in user_tasks_cache[uid]:
+        task_id = user_tasks_cache[uid][num]
+        
+        # 1. Actualizar en Supabase
+        supabase.table("daily_tasks").update({"is_completed": True})\
+            .eq("id", task_id).execute()
+        
+        # 2. Opcional: Obtener el nombre de la tarea para una respuesta más bonita
+        # (Podrías guardarlo también en el caché para no volver a consultar)
+        
+        await message.answer(f"✅ ¡Excelente! Tarea {num} completada.")
+        
+        # 3. Limpiar ese número específico del caché para que no se repita por error
+        del user_tasks_cache[uid][num]
+    else:
+        # SI NO ESTÁ EN EL CACHÉ: Es una nota normal que casualmente es un número.
+        # Llamamos a tu función handle_all_messages o dejamos que siga su flujo.
+        await handle_all_messages(message)
+
+@dp.message(Command("day_r"))
+async def cmd_day_r(message: types.Message):
+    if not await es_autorizado(message): return
+
+    # 1. Obtener tareas del día
+    res = supabase.table("daily_tasks")\
+        .select("*")\
+        .eq("user_id", message.from_user.id)\
+        .eq("is_archived", False).execute()
+
+    if not res.data:
+        await message.answer("No hay actividades para resumir hoy.")
+        return
+
+    # 2. Preparar datos para Gemini
+    completadas = [t['task_description'] for t in res.data if t['is_completed']]
+    pendientes = [t['task_description'] for t in res.data if not t['is_completed']]
+
+    prompt = f"""
+    Eres un coach de productividad. Analiza mi día:
+    Tareas completadas: {completadas}
+    Tareas pendientes: {pendientes}
+    
+    Dame un resumen corto (máximo 4 líneas) sobre mi desempeño hoy, 
+    una recomendación para mañana y felicítame si hice más del 50%.
+    """
+    
+    response = model.generate_content(prompt)
+    try:
+        await message.answer(f"🌙 **Resumen del Día:**\n\n{response.text}", parse_mode="Markdown")
+    except:
+        await message.answer(f"🌙 Resumen del Día:\n\n{response.text}")
+
+    # 3. Resetear el día (Archivar todo)
+    supabase.table("daily_tasks").update({"is_archived": True})\
+        .eq("user_id", message.from_user.id)\
+        .eq("is_archived", False).execute()
+    
+    await message.answer("🧹 Día finalizado. ¡Nos vemos mañana!")
+
+@dp.message(Command("hecho"))
+async def cmd_hecho(message: types.Message):
+    if not await es_autorizado(message): return
+    
+    uid = message.from_user.id
+    # Extraer el número después de /hecho
+    partes = message.text.split()
+    
+    if len(partes) < 2 or not partes[1].isdigit():
+        await message.answer("⚠️ Indica el número de la tarea. Ej: `/hecho 1`")
+        return
+
+    num = int(partes[1])
+
+    # Revisar si el número está en nuestra "memoria temporal"
+    if uid in user_tasks_cache and num in user_tasks_cache[uid]:
+        task_id = user_tasks_cache[uid][num]
+        
+        # Actualizar en Supabase
+        try:
+            supabase.table("daily_tasks").update({"is_completed": True})\
+                .eq("id", task_id).execute()
+            
+            await message.answer(f"✅ ¡Confirmado! La actividad {num} ya fue realizada.")
+            
+            # Quitamos esa tarea del caché para que no se marque dos veces
+            del user_tasks_cache[uid][num]
+        except Exception as e:
+            print(f"Error al marcar tarea: {e}")
+            await message.answer("Error al conectar con la base de datos.")
+    else:
+        await message.answer(f"❌ No encontré la tarea {num}. Prueba lanzando `/day_task` primero para ver la lista actual.")
+
 @dp.message(Command("buscar"))
 async def cmd_buscar(message: types.Message):
     if not await es_autorizado(message): return
     
     # Extraer la palabra clave después del comando /buscar
-    query = message.text.replace("/buscar", "").strip()
+    # Extraer búsqueda eliminando el comando inicial
+    partes = message.text.split(maxsplit=1)
+    query = partes[1].strip() if len(partes) > 1 else ""
     
     if not query:
         await message.answer("🧐 ¿Qué quieres buscar? Ejemplo: `/buscar examen`")
